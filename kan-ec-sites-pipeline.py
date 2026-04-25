@@ -13,6 +13,7 @@ feature_dict = {
     'shortwave radiation': 'SW_IN_F',
 }
 
+n_run = 2
 n_epochs = 10
 n_steps = 10
 
@@ -83,7 +84,7 @@ for site_file in site_files:
         # train the model
         model.train()
 
-        r2_train_best, r2_test_best = 0.0, 0.0
+        r2_train_best, r2_test_best = -100, -100
         for e in range(n_epochs):
             print(f"Training Epoch {e+1} Starts")
             model.fit(dataset, opt="LBFGS", steps=n_steps, lamb=0.005, lamb_entropy=1.0, lr=1)
@@ -100,8 +101,15 @@ for site_file in site_files:
             print(f"Evaluation for Epoch {e+1}. Test year {test_year}: Train R² {r2_train:.3f}, Test R² {r2_test:.3f}")
             print(f"Training Epoch {e + 1} Ends")
 
-            r2_train_best = max(r2_train_best, r2_train)
-            r2_test_best = max(r2_test_best, r2_test)
+            if r2_train > r2_train_best:
+                r2_train_best = r2_train
+                r2_test_best = r2_test
+                model.saveckpt(f"./model/run_{n_run}/kan_{site_name}_{test_year}_{n_epochs * n_steps}_model")
+
+        # model = model.prune()
+        # model.plot(beta=10, scale=2.0, in_vars=list(feature_dict.values()), out_vars=['RECO'],
+        #                       title=f'Site {site_name}, tested in {test_year}', varscale=0.1)
+        # plt.savefig(f"./plots/run_{n_run}/kan_{site_name}_{test_year}_{n_epochs * n_steps}_activation.png")
 
         yearly_results[int(test_year)] = {"train": float(r2_train_best), "test": float(r2_test_best)}
 
@@ -112,10 +120,12 @@ for site_file in site_files:
         r2_train_list.append(r["train"])
         r2_test_list.append(r["test"])
 
-    # print(f"MLP Average: Train R² {mlp_results[mlp_results['site_ID']=='US-xST'].mean_r2_train:.3f}, Test R² {mlp_results[mlp_results['site_ID']=='US-xST'].mean_r2_test:.3f}")
     print(f"KAN Average: Train R² {np.mean(r2_train_list):.3f}, Test R² {np.mean(r2_test_list):.3f}")
 
     import json
 
-    json.dump(yearly_results, open(f"results/kan_{site_name}_{n_epochs * n_steps}_results.json", "w"))
+    json.dump(yearly_results, open(f"results/run_{n_run}/kan_{site_name}_{n_epochs * n_steps}_results.json", "w"))
 
+
+# ""r = np.corrcoef(pred, obs)[0,1]
+#     r2 = r**2""
