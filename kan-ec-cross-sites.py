@@ -1,5 +1,6 @@
 import torch.nn.functional as F
 from sklearn.metrics import r2_score
+from sklearn.model_selection import train_test_split
 from matplotlib import pyplot as plt
 
 import pandas as pd
@@ -18,6 +19,7 @@ n_epochs = 10
 n_steps = 10
 
 import os
+import json
 
 directory_path = './data/site_data'
 
@@ -42,6 +44,8 @@ input_dim = len(feature_dict)
 features = list(feature_dict.values())
 target_col = 'RECO_NT_VUT_REF'
 
+site_datasets = {}
+
 for site_file in site_files:
     print(site_file)
     site_name = site_file.split('\\')[-1].split('_')[0]
@@ -49,82 +53,84 @@ for site_file in site_files:
 
     # Drop rows with NaNs in features or target
     df_model = df.dropna(subset=features + [target_col, 'year']).copy()
+    df_features, df_labels = df_model[features], df_model[target_col].values.reshape(-1, 1)
 
-    years = sorted(df_model['year'].unique())
-    print(f"Years in dataset {site_name}: {years}")
+    train_input, test_input, train_label, test_label = train_test_split(df_features, df_labels, test_size=0.2, random_state=42)
 
-    yearly_results = {}
+    train_input = train_input.values
+    train_label = np.log(train_label)
 
-    for test_year in years:
-        print(f"\n=== Fold: Test year = {test_year} ===")
+    test_input = test_input.values
+    test_label = np.log(test_label)
 
-        train_df = df_model[df_model['year'] != test_year]
-        test_df = df_model[df_model['year'] == test_year]
+    dataset = {
+        "train_input": torch.DoubleTensor(train_input).to(device),
+        "train_label": torch.DoubleTensor(train_label).to(device),
+        "test_input": torch.DoubleTensor(test_input).to(device),
+        "test_label": torch.DoubleTensor(test_label).to(device)
+    }
 
-        train_input = train_df[features].values
-        train_label = np.log(train_df[target_col].values.reshape(-1, 1))
+    site_datasets[site_name] = dataset
 
-        test_input = test_df[features].values
-        test_label = np.log(test_df[target_col].values.reshape(-1, 1))
+cross_site_r2s, cross_site_rho2s = {}, {}
+for train_site_name, train_dataset in site_datasets.items():
+    print(train_site_name)
+    print(train_dataset['train_input'].shape, train_dataset['train_label'].shape)
 
-        dataset = {
-            "train_input": torch.DoubleTensor(train_input).to(device),
-            "train_label": torch.DoubleTensor(train_label).to(device),
-            "test_input": torch.DoubleTensor(test_input).to(device),
-            "test_label": torch.DoubleTensor(test_label).to(device)
-        }
+    cross_site_r2s[train_site_name] = {}
+    cross_site_rho2s[train_site_name] = {}
 
-        print(dataset['train_input'].shape, dataset['train_label'].shape)
-        print(dataset['test_input'].shape, dataset['test_label'].shape)
+    # KAN initialization
+    # model = KAN(width=[input_dim, 2 * input_dim + 1, 1], grid=3, k=3, noise_scale=0.1, seed=1, device=device)
+    model = KAN(width=[input_dim, 2 * input_dim + 1, 1], grid=3, k=3, noise_scale=0.3, seed=42, device=device)
 
-        # KAN initialization
-        # model = KAN(width=[input_dim, 2 * input_dim + 1, 1], grid=3, k=3, noise_scale=0.1, seed=1, device=device)
-        model = KAN(width=[input_dim, 2 * input_dim + 1, 1], grid=3, k=3, noise_scale=0.3, seed=42, device=device)
+    # train the model
+    model.train()
 
-        # train the model
-        model.train()
+    r2_train_best, rho2_train_best = -100, -100
 
-        r2_train_best, r2_test_best = -np.inf, -np.inf
-        for e in range(n_epochs):
-            print(f"Training Epoch {e+1} Starts")
-            model.fit(dataset, opt="LBFGS", steps=n_steps, lamb=0.005, lamb_entropy=1.0, lr=1)
-            # print(f"KAN visualization for test year {test_year}")
+    for e in range(n_epochs):
+        print(f"Training Epoch {e+1} Starts")
+        model.fit(train_dataset, opt="LBFGS", steps=n_steps, lamb=0.005, lamb_entropy=1.0, lr=1)
+        # print(f"KAN visualization for test year {test_year}")
 
-            model.eval()
-            with torch.no_grad():
-                train_pred = model(dataset['train_input']).cpu().numpy().ravel()
-                test_pred = model(dataset['test_input']).cpu().numpy().ravel()
+        model.eval()
+        with torch.no_grad():
+            train_pred = model(train_dataset['train_input']).cpu().numpy().ravel()
+            train_label = train_dataset['train_label'].cpu().numpy().ravel()
 
-                r2_train = r2_score(np.exp(train_label), np.exp(train_pred))
-                r2_test = r2_score(np.exp(test_label), np.exp(test_pred))
+            r2_train = r2_score(np.exp(train_label), np.exp(train_pred))
+            rho2_train = (np.corrcoef(np.exp(train_label), np.exp(train_pred))[0,1])**2
 
-            print(f"Evaluation for Epoch {e+1}. Test year {test_year}: Train R² {r2_train:.3f}, Test R² {r2_test:.3f}")
-            print(f"Training Epoch {e + 1} Ends")
+        print(f"Evaluation for Epoch {e+1}. Train R² {r2_train:.3f}, Train Rho² {rho2_train:.3f}")
 
-            if r2_train > r2_train_best:
-                r2_train_best = r2_train
+        if r2_train > r2_train_best:
+            r2_train_best = r2_train
+            rho2_train_best = rho2_train
 
-            if r2_test > r2_test_best:
-                r2_test_best = r2_test
-                model.saveckpt(f"./model/run_{n_run}/kan_{site_name}_{n_epochs * n_steps}_model")
-            # r2_train_best = max(r2_train_best, r2_train)
-            # r2_test_best = max(r2_test_best, r2_test)
+            model.saveckpt(f"./model/run_{n_run}/kan_{train_site_name}_complete_{n_epochs * n_steps}_model")
 
-        yearly_results[int(test_year)] = {"train": float(r2_train_best), "test": float(r2_test_best)}
+    print(f"Best Training Metrics for {train_site_name}. Train R² {r2_train_best:.3f}, Train Rho² {rho2_train_best:.3f}")
 
+    print(f"Cross-site Evaluation for {train_site_name}.")
 
-    r2_train_list = []
-    r2_test_list = []
-    for r in yearly_results.values():
-        r2_train_list.append(r["train"])
-        r2_test_list.append(r["test"])
+    model = KAN.loadckpt(f"./model/run_{n_run}/kan_{train_site_name}_complete_{n_epochs * n_steps}_model").to(device)
 
-    print(f"KAN Average: Train R² {np.mean(r2_train_list):.3f}, Test R² {np.mean(r2_test_list):.3f}")
+    for test_site_name, test_dataset in site_datasets.items():
+        model.eval()
+        with torch.no_grad():
+            test_pred = model(test_dataset['test_input']).cpu().numpy().ravel()
+            test_label = test_dataset['test_label'].cpu().numpy().ravel()
 
-    import json
+            r2_test = r2_score(np.exp(test_label), np.exp(test_pred))
+            rho2_test = (np.corrcoef(np.exp(test_label), np.exp(test_pred))[0, 1]) ** 2
 
-    json.dump(yearly_results, open(f"results/run_{n_run}/kan_{site_name}_{n_epochs * n_steps}_results.json", "w"))
+            cross_site_r2s[train_site_name][test_site_name] = r2_test
+            cross_site_rho2s[train_site_name][test_site_name] = rho2_test
+
+json.dump(cross_site_r2s, open(f"results/run_{n_run}/kan_cross_site_r2_{n_epochs * n_steps}_results.json", "w"))
+json.dump(cross_site_rho2s, open(f"results/run_{n_run}/kan_cross_site_rho2_{n_epochs * n_steps}_results.json", "w"))
 
 
-# ""r = np.corrcoef(pred, obs)[0,1]
-#     r2 = r**2""
+
+

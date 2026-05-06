@@ -18,6 +18,7 @@ n_epochs = 10
 n_steps = 10
 
 import os
+import json
 
 directory_path = './data/site_data'
 
@@ -122,10 +123,4 @@ for site_file in site_files:
 
     print(f"KAN Average: Train R² {np.mean(r2_train_list):.3f}, Test R² {np.mean(r2_test_list):.3f}")
 
-    import json
-
     json.dump(yearly_results, open(f"results/run_{n_run}/kan_{site_name}_{n_epochs * n_steps}_results.json", "w"))
-
-
-# ""r = np.corrcoef(pred, obs)[0,1]
-#     r2 = r**2""
